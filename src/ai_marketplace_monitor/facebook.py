@@ -528,8 +528,10 @@ class FacebookMarketplace(Marketplace):
 
                 counter.increment(CounterItem.SEARCH_PERFORMED, item_config.name)
 
-                # record every listing the search returned, before any price,
-                # keyword or AI filter, so price history samples the whole market
+                # record every listing the search returned, before the local
+                # keyword, seller and AI filters, so price history samples the
+                # whole market. min_price/max_price still apply: they are part
+                # of the search URL and are filtered by Facebook itself.
                 try:
                     recorded = price_history.record(
                         found_listings,

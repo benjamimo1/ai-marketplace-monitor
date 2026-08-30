@@ -4,9 +4,13 @@ Upstream is alert-driven: it notifies about new listings and then forgets them.
 This module records every listing returned by a search, on every run, so that
 average / median prices for an item can be tracked over time.
 
-Recording happens on the raw search-results page, before price, keyword and AI
-filters are applied, so the sample reflects the whole market for a phrase rather
-than only the listings that were interesting enough to notify about.
+Recording happens on the raw search-results page, before the local keyword,
+seller and AI filters are applied, so the sample reflects the whole market for a
+phrase rather than only the listings that were interesting enough to notify
+about. Note that `min_price` / `max_price` are passed to Facebook in the search
+URL and so still bound the sample -- which is usually wanted, since it keeps
+cases and spare parts out of the average -- but the band should be set wide
+enough not to clip genuine listings.
 """
 
 import re
