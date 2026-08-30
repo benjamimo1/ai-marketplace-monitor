@@ -187,3 +187,34 @@ def classify(title: str, description: str | None = None) -> str:
 def is_product(label: str) -> bool:
     """True when the label names a working device rather than parts or noise."""
     return label not in (UNKNOWN, ACCESSORY, OTHER, FOR_PARTS)
+
+
+# A bundled Apple Pencil is only worth the 2nd-generation price; a 1st gen sells
+# for materially less. Sellers state the generation inconsistently, and the
+# generation words also appear for the tablet itself ("iPad Air 5ta generación
+# + apple pencil"), so match only a generation attached to the pencil.
+_PENCIL_GENERATION = (
+    (2, re.compile(r"(?:pencil|lapiz)\s*(?:de\s*)?(?:2|ii|2a|2da|2nd|segunda|pro)\b")),
+    (2, re.compile(r"\b(?:2|2a|2da|segunda)\s*(?:a\s*)?gen\w*\s*(?:de\s*)?(?:pencil|lapiz)")),
+    (1, re.compile(r"(?:pencil|lapiz)\s*(?:de\s*)?(?:1|1a|1ra|1era|primera|1st)\b")),
+    (1, re.compile(r"\b(?:1|1a|1ra|primera)\s*(?:a\s*)?gen\w*\s*(?:de\s*)?(?:pencil|lapiz)")),
+)
+
+_HAS_PENCIL = re.compile(r"\b(?:apple\s*)?(?:pencil|lapiz)\b")
+
+
+def pencil(title: str, description: str | None = None) -> Optional[int]:
+    """Which Apple Pencil generation a listing includes.
+
+    Returns 2 or 1 when the listing says so, 0 when a pencil is mentioned but
+    the generation is not stated, and None when no pencil is offered at all.
+    The distinction matters: only a stated 2nd generation is worth the 2nd
+    generation resale price, and guessing costs real money either way.
+    """
+    text = normalize(f"{title} {description or ''}")
+    if not _HAS_PENCIL.search(text):
+        return None
+    for generation, pattern in _PENCIL_GENERATION:
+        if pattern.search(text):
+            return generation
+    return 0

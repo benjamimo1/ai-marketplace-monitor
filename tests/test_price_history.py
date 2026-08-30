@@ -262,3 +262,34 @@ def test_observations_filter_by_model(db: Path) -> None:
     )
     rows = price_history.observations(model="iPad Air 5 (M1)", db_path=db)
     assert [r["price"] for r in rows] == [400000.0]
+
+
+def test_contacts_are_recorded_and_deduped(db: Path) -> None:
+    price_history.record([make_listing("1", "$330.000")], "i", "q", db_path=db)
+    price_history.record_contact("1", seller="Javier", offer=260000, db_path=db)
+    listings, sellers = price_history.contacted(db_path=db)
+    assert listings == {"1"} and sellers == {"javier"}
+
+    # re-recording updates rather than duplicating
+    price_history.record_contact("1", seller="Javier", offer=250000, db_path=db)
+    rows = price_history.contacts(db_path=db)
+    assert len(rows) == 1 and rows[0]["offer"] == 250000
+
+
+def test_contacted_matches_a_seller_across_their_other_listings(db: Path) -> None:
+    # one seller, two listings: contacting either must exclude both
+    price_history.record(
+        [make_listing("1", "$330.000"), make_listing("2", "$350.000")], "i", "q", db_path=db
+    )
+    price_history.record_contact("1", seller="Ulises Moises", db_path=db)
+    _, sellers = price_history.contacted(db_path=db)
+    assert "ulises moises" in sellers
+
+
+def test_contact_seller_falls_back_to_the_stored_listing(db: Path) -> None:
+    listing = make_listing("1", "$330.000")
+    price_history.record([listing], "i", "q", db_path=db)
+    listing.seller = "Paola Fernanda"
+    price_history.update_details(listing, db_path=db)
+    price_history.record_contact("1", db_path=db)  # no seller passed
+    assert price_history.contacts(db_path=db)[0]["seller"] == "Paola Fernanda"

@@ -29,6 +29,11 @@ AllOption = Annotated[
 ]
 
 
+def _clp(value: float) -> str:
+    """Chilean pesos: a dot as the thousands separator, no decimals."""
+    return f"${value:,.0f}".replace(",", ".")
+
+
 def _money(value: float, currency: Optional[str]) -> str:
     return f"{currency or ''}{value:,.0f}" if value >= 100 else f"{currency or ''}{value:,.2f}"
 
@@ -189,10 +194,6 @@ def show(
         rich.print(f"  [dim]{row['post_url']}[/dim]")
 
 
-PENCIL2 = re.compile(r"(apple\s*)?(pencil|lapiz)\s*(2|ii|2da|segunda)|(2da|segunda)\s*gen\w*\s*(pencil|lapiz)")
-PENCIL_ANY = re.compile(r"\b(apple\s*)?(pencil|lapiz)\b")
-
-
 @app.command()
 def deals(
     sell: Annotated[
@@ -209,6 +210,21 @@ def deals(
         float,
         typer.Option("--haggle", help="Percent you can typically negotiate off the asking price."),
     ] = 0.0,
+    assume_pencil: Annotated[
+        bool,
+        typer.Option(
+            "--assume-pencil",
+            help="Credit the pencil value even when the listing does not state its"
+            " generation. Off by default: a 1st gen is worth much less.",
+        ),
+    ] = False,
+    include_contacted: Annotated[
+        bool,
+        typer.Option("--include-contacted", help="Also show sellers already approached."),
+    ] = False,
+    messages: Annotated[
+        bool, typer.Option("--messages", help="Print ready-to-send offers instead of a table.")
+    ] = False,
     item: ItemOption = None,
     days: DaysOption = None,
     limit: Annotated[int, typer.Option("--limit", "-n")] = 200,
@@ -227,31 +243,56 @@ def deals(
         rich.print(f"[yellow]No listings recorded for model {model!r}.[/yellow]")
         raise typer.Exit(1)
 
+    seen_listings, seen_sellers = price_history.contacted()
     factor = 1 - (haggle / 100.0)
-    found = []
+    found, skipped = [], 0
     for row in rows:
-        text = classify.normalize(f"{row['title']} {row['description'] or ''}")
-        has_pencil = bool(PENCIL_ANY.search(text))
-        # only a Pencil 2 is worth the quoted resale; an unqualified "pencil"
-        # may be a 1st generation, which is worth materially less
-        confirmed = bool(PENCIL2.search(text))
-        resale = sell + (pencil if has_pencil else 0)
+        generation = classify.pencil(row["title"], row["description"])
+        # only a stated 2nd generation earns the quoted resale
+        credit = pencil if generation == 2 or (generation == 0 and assume_pencil) else 0
+        resale = sell + credit
+        offer = round(min(row["price"] * factor, resale) / 10000) * 10000
+        already = row["listing_id"] in seen_listings or (
+            (row["seller"] or "").strip().lower() in seen_sellers and row["seller"]
+        )
+        if already and not include_contacted:
+            skipped += 1
+            continue
         found.append(
             {
+                "id": row["listing_id"],
                 "ask": row["price"],
-                "best": row["price"] * factor,
-                "resale": resale,
+                "offer": offer,
+                "profit": resale - offer,
                 "at_ask": resale - row["price"],
-                "at_best": resale - row["price"] * factor,
-                # what to actually pay: the haggled price, never above break-even
-                "offer": min(row["price"] * factor, resale),
-                "pencil": "Pencil 2" if confirmed else ("pencil?" if has_pencil else ""),
+                "gen": generation,
+                "seller": row["seller"] or "?",
                 "title": row["title"],
                 "url": (row["post_url"] or "").split("?")[0],
+                "already": already,
             }
         )
 
-    viable = [f for f in found if f["at_best"] > 0]
+    viable = sorted((f for f in found if f["profit"] > 0), key=lambda x: -x["profit"])
+
+    if messages:
+        if not viable:
+            rich.print("[yellow]Nothing to offer on.[/yellow]")
+            raise typer.Exit(1)
+        for f in viable:
+            note = {2: "Pencil 2", 0: "pencil, generation unstated", 1: "Pencil 1"}.get(f["gen"], "")
+            rich.print(
+                f"\n[bold]{f['seller']}[/bold] — ask {_clp(f['ask'])}, profit"
+                f" [green]{_clp(f['profit'])}[/green]{f' · {note}' if note else ''}"
+            )
+            rich.print(f"  [dim]{f['url']}[/dim]")
+            rich.print(f'  Hola! aun disponible? Aceptarias {_clp(f["offer"])}')
+        rich.print(
+            f"\n[dim]After sending, record each one:[/dim]\n"
+            f"  aimm-prices contacted --id <listing_id> --offer <amount>"
+        )
+        return
+
     table = Table(
         title=f"{model} — sell at {sell:,}"
         + (f" + pencil {pencil:,}" if pencil else "")
@@ -259,37 +300,62 @@ def deals(
     )
     for column in ("Ask", "Offer", "P/L ask", "P/L hagg"):
         table.add_column(column, justify="right", no_wrap=True)
-    table.add_column("Ext", no_wrap=True)
+    table.add_column("Pencil", no_wrap=True)
     table.add_column("Listing", overflow="ellipsis")
-    for f in sorted(viable or found, key=lambda x: -x["at_best"])[:20]:
-        style = "green" if f["at_best"] > 0 else "red"
+    for f in (viable or sorted(found, key=lambda x: -x["profit"]))[:20]:
+        style = "green" if f["profit"] > 0 else "red"
         table.add_row(
             f"{f['ask']:,.0f}",
             f"{f['offer']:,.0f}",
             f"[{'green' if f['at_ask'] > 0 else 'red'}]{f['at_ask']:+,.0f}[/]",
-            f"[{style}]{f['at_best']:+,.0f}[/]",
-            "P2" if f["pencil"] == "Pencil 2" else ("p?" if f["pencil"] else ""),
-            f["title"][:26],
+            f"[{style}]{f['profit']:+,.0f}[/]",
+            {2: "P2", 1: "[red]P1[/red]", 0: "[yellow]p?[/yellow]"}.get(f["gen"], ""),
+            f["title"][:24],
         )
     rich.print(table)
-
+    if skipped:
+        rich.print(f"[dim]{skipped} listing(s) hidden: seller already contacted."
+                   " Use --include-contacted to show them.[/dim]")
     if viable:
-        rich.print(
-            f"\n[green]{len(viable)} of {len(found)} can profit[/green] — but only if you get"
-            f" the full {haggle:g}% off. At the asking price"
-            f" {sum(1 for f in found if f['at_ask'] > 0)} of {len(found)} profit."
-        )
-        for f in sorted(viable, key=lambda x: -x["at_best"])[:5]:
-            rich.print(f"  [dim]{f['url']}[/dim]")
+        rich.print(f"[green]{len(viable)} worth offering on.[/green]"
+                   " Run with --messages for ready-to-send text.")
     else:
-        short = min(f["ask"] - f["resale"] / factor for f in found)
-        rich.print(
-            f"\n[red]None of {len(found)} listings can profit[/red] even haggling {haggle:g}%."
-            f" The cheapest is [bold]{short:,.0f}[/bold] above what you could pay."
+        rich.print("[red]Nothing clears your resale price.[/red]")
+    if any(f["gen"] == 0 for f in found) and not assume_pencil:
+        rich.print("[yellow]p?[/yellow] = pencil mentioned, generation unstated; its value is"
+                   " NOT counted. Use --assume-pencil to include it.")
+
+
+@app.command("contacted")
+def mark_contacted(
+    listing_id: Annotated[str, typer.Option("--id", help="Facebook listing id.")],
+    offer: Annotated[Optional[int], typer.Option("--offer", help="Amount offered.")] = None,
+    message: Annotated[Optional[str], typer.Option("--message")] = None,
+    seller: Annotated[Optional[str], typer.Option("--seller")] = None,
+) -> None:
+    """Record that an offer was sent, so it is not offered again."""
+    price_history.record_contact(listing_id, seller=seller, offer=offer, message=message)
+    rich.print(f"[green]Recorded contact for {listing_id}.[/green]")
+
+
+@app.command("sent")
+def list_contacts() -> None:
+    """Offers already sent."""
+    rows = price_history.contacts()
+    if not rows:
+        rich.print("[yellow]No offers recorded yet.[/yellow]")
+        raise typer.Exit(1)
+    table = Table(title="Offers sent")
+    for column in ("When", "Seller", "Offer", "Listing"):
+        table.add_column(column, overflow="ellipsis")
+    for row in rows:
+        table.add_row(
+            (row["contacted_at"] or "").replace("T", " ")[5:16],
+            row["seller"] or "?",
+            _clp(row["offer"]) if row["offer"] else "-",
+            (row["title"] or row["listing_id"])[:30],
         )
-    if any(f["pencil"] == "pencil?" for f in found):
-        rich.print("[yellow]pencil?[/yellow] = a pencil is mentioned but the generation is not"
-                   " stated; a 1st gen is worth less than the figure you gave.")
+    rich.print(table)
 
 
 @app.command()

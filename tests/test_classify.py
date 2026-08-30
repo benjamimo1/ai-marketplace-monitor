@@ -67,3 +67,32 @@ def test_is_product_excludes_non_devices() -> None:
     assert not is_product(FOR_PARTS)
     assert not is_product(OTHER)
     assert not is_product("unknown")
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("iPad Air 5ta Gen M1 64GB + Apple Pencil 2 + funda", 2),
+        ("Vendo mi iPad Air junto con el Apple Pencil de 2da Generación", 2),
+        ("iPad Air 11 M2 256 gb + Apple Pencil Pro", 2),
+        ("iPad de novena generación + Apple Pencil primera generacion", 1),
+        # the tablet's generation sits right beside the pencil and must not be
+        # read as the pencil's: mentioned, but generation unstated
+        ("ipad air 5ta generación + apple pencil", 0),
+        ("iPad Air 5ta Generación color rosado + Apple Pencil", 0),
+        # no pencil at all
+        ("iPad Air 5ta generación 64gb", None),
+    ],
+)
+def test_pencil_generation(text: str, expected) -> None:
+    from ai_marketplace_monitor.classify import pencil
+
+    assert pencil(text) == expected
+
+
+def test_pencil_generation_found_in_description() -> None:
+    from ai_marketplace_monitor.classify import pencil
+
+    # the title says nothing; the description is where the value is
+    assert pencil("iPad Air 5ta generación 64gb") is None
+    assert pencil("iPad Air 5ta generación 64gb", "Incluye Apple Pencil 2ª generación") == 2

@@ -76,6 +76,19 @@ CREATE TABLE IF NOT EXISTS observation (
 CREATE UNIQUE INDEX IF NOT EXISTS observation_daily
     ON observation (marketplace, listing_id, item_name, observed_date, COALESCE(price, -1));
 
+-- Who has already been approached, so an offer is never repeated and a seller
+-- with several listings is only contacted once. Keyed by listing, but sellers
+-- are matched by name too: one person often lists the same model twice.
+CREATE TABLE IF NOT EXISTS contact (
+    marketplace  TEXT NOT NULL,
+    listing_id   TEXT NOT NULL,
+    seller       TEXT,
+    offer        REAL,
+    message      TEXT,
+    contacted_at TEXT NOT NULL,
+    PRIMARY KEY (marketplace, listing_id)
+);
+
 CREATE INDEX IF NOT EXISTS observation_item_time
     ON observation (item_name, observed_at);
 """
@@ -393,6 +406,7 @@ def observations(
 ) -> List[sqlite3.Row]:
     query = (
         "SELECT o.observed_at, o.item_name, o.search_phrase, o.title, o.price_raw,"
+        " o.listing_id,"
         " o.price, o.currency, o.location, o.matched, l.post_url, l.description,"
         " l.seller, l.condition, l.model"
         " FROM observation o LEFT JOIN listing l"
@@ -420,6 +434,64 @@ def observations(
     params.append(limit)
     with _connect(db_path) as conn, closing(conn.execute(query, params)) as cur:
         return cur.fetchall()
+
+
+def record_contact(
+    listing_id: str,
+    seller: str | None = None,
+    offer: float | None = None,
+    message: str | None = None,
+    marketplace: str = "facebook",
+    db_path: Path | None = None,
+) -> None:
+    """Note that an offer was sent, so it is not sent again tomorrow."""
+    with _connect(db_path) as conn:
+        if seller is None:
+            row = conn.execute(
+                "SELECT seller FROM listing WHERE marketplace = ? AND listing_id = ?",
+                (marketplace, listing_id),
+            ).fetchone()
+            seller = row["seller"] if row else None
+        conn.execute(
+            "INSERT INTO contact (marketplace, listing_id, seller, offer, message,"
+            " contacted_at) VALUES (?,?,?,?,?,?)"
+            " ON CONFLICT (marketplace, listing_id) DO UPDATE SET"
+            " offer=excluded.offer, message=excluded.message,"
+            " contacted_at=excluded.contacted_at",
+            (
+                marketplace,
+                listing_id,
+                seller,
+                offer,
+                message,
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+
+
+def contacts(db_path: Path | None = None) -> List[sqlite3.Row]:
+    """Every offer already sent, most recent first."""
+    with _connect(db_path) as conn, closing(
+        conn.execute(
+            "SELECT c.listing_id, c.seller, c.offer, c.message, c.contacted_at,"
+            " l.title FROM contact c LEFT JOIN listing l"
+            " ON l.marketplace = c.marketplace AND l.listing_id = c.listing_id"
+            " ORDER BY c.contacted_at DESC"
+        )
+    ) as cur:
+        return cur.fetchall()
+
+
+def contacted(db_path: Path | None = None) -> Tuple[set, set]:
+    """(listing ids, seller names) already approached."""
+    with _connect(db_path) as conn, closing(
+        conn.execute("SELECT listing_id, seller FROM contact")
+    ) as cur:
+        rows = cur.fetchall()
+    return (
+        {r["listing_id"] for r in rows},
+        {r["seller"].strip().lower() for r in rows if r["seller"]},
+    )
 
 
 def item_names(db_path: Path | None = None) -> List[str]:
