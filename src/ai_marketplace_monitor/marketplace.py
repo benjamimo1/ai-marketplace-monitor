@@ -1,5 +1,7 @@
+import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from enum import Enum
 from logging import Logger
 from typing import Any, Callable, Generator, Generic, List, Type, TypeVar
@@ -10,6 +12,7 @@ from .listing import Listing
 from .utils import (
     BaseConfig,
     Currency,
+    amm_home,
     KeyboardMonitor,
     MonitorConfig,
     Translator,
@@ -518,10 +521,38 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
                     None
                     if self.config.monitor_config is None
                     else self.config.monitor_config.get_proxy_options()
-                )
+                ),
+                # Reuse the previous session so a restart does not mean logging in
+                # and clearing a CAPTCHA again. Playwright contexts are otherwise
+                # entirely in-memory and every cookie dies with the process.
+                storage_state=str(self.session_file) if self.session_file.exists() else None,
             )
             self.page = context.new_page()
         return self.page
+
+    @property
+    def session_file(self: "Marketplace") -> Path:
+        """Where this marketplace's cookies are persisted between runs."""
+        return amm_home / f"{self.name}_session.json"
+
+    def save_session(self: "Marketplace") -> None:
+        """Persist cookies after a successful login. Never fatal: a failure here
+        only costs an extra login next time."""
+        try:
+            if self.page is None:
+                return
+            self.page.context.storage_state(path=str(self.session_file))
+            # the file holds live session cookies, so keep it owner-readable only
+            os.chmod(self.session_file, 0o600)
+            if self.logger:
+                self.logger.debug(
+                    f"""{hilight("[Login]", "succ")} Saved session to {self.session_file}"""
+                )
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"""{hilight("[Login]", "fail")} Could not save session: {e}""")
 
     def goto_url(self: "Marketplace", url: str, attempt: int = 0) -> None:
         try:

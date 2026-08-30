@@ -1,6 +1,7 @@
 """Console script for querying the price history database."""
 
 import csv
+import re
 import sys
 from typing import Annotated, Optional
 
@@ -8,7 +9,7 @@ import rich
 import typer
 from rich.table import Table
 
-from . import price_history
+from . import classify, price_history
 
 app = typer.Typer(help="Inspect the price history recorded by the monitor.")
 
@@ -186,6 +187,109 @@ def show(
         else:
             rich.print("  [dim]no description recorded (details were never fetched)[/dim]")
         rich.print(f"  [dim]{row['post_url']}[/dim]")
+
+
+PENCIL2 = re.compile(r"(apple\s*)?(pencil|lapiz)\s*(2|ii|2da|segunda)|(2da|segunda)\s*gen\w*\s*(pencil|lapiz)")
+PENCIL_ANY = re.compile(r"\b(apple\s*)?(pencil|lapiz)\b")
+
+
+@app.command()
+def deals(
+    sell: Annotated[
+        int, typer.Option("--sell", help="What YOU can actually sell the device for.")
+    ],
+    model: Annotated[
+        str, typer.Option("--model", "-m", help="Model label to hunt for.")
+    ] = "iPad Air 5 (M1)",
+    pencil: Annotated[
+        int,
+        typer.Option("--pencil", help="What you can sell a bundled Apple Pencil 2 for."),
+    ] = 0,
+    haggle: Annotated[
+        float,
+        typer.Option("--haggle", help="Percent you can typically negotiate off the asking price."),
+    ] = 0.0,
+    item: ItemOption = None,
+    days: DaysOption = None,
+    limit: Annotated[int, typer.Option("--limit", "-n")] = 200,
+) -> None:
+    """Listings you could buy and resell for a profit.
+
+    Compares each listing's asking price against what you can actually sell for,
+    not against other asking prices -- a market can ask far more than it gets,
+    and comparing asks to asks invents margins that do not exist.
+    """
+    rows = price_history.observations(
+        item_name=item, days=days, limit=limit, model=model, latest_only=True
+    )
+    rows = [r for r in rows if r["price"] is not None]
+    if not rows:
+        rich.print(f"[yellow]No listings recorded for model {model!r}.[/yellow]")
+        raise typer.Exit(1)
+
+    factor = 1 - (haggle / 100.0)
+    found = []
+    for row in rows:
+        text = classify.normalize(f"{row['title']} {row['description'] or ''}")
+        has_pencil = bool(PENCIL_ANY.search(text))
+        # only a Pencil 2 is worth the quoted resale; an unqualified "pencil"
+        # may be a 1st generation, which is worth materially less
+        confirmed = bool(PENCIL2.search(text))
+        resale = sell + (pencil if has_pencil else 0)
+        found.append(
+            {
+                "ask": row["price"],
+                "best": row["price"] * factor,
+                "resale": resale,
+                "at_ask": resale - row["price"],
+                "at_best": resale - row["price"] * factor,
+                # what to actually pay: the haggled price, never above break-even
+                "offer": min(row["price"] * factor, resale),
+                "pencil": "Pencil 2" if confirmed else ("pencil?" if has_pencil else ""),
+                "title": row["title"],
+                "url": (row["post_url"] or "").split("?")[0],
+            }
+        )
+
+    viable = [f for f in found if f["at_best"] > 0]
+    table = Table(
+        title=f"{model} — sell at {sell:,}"
+        + (f" + pencil {pencil:,}" if pencil else "")
+        + (f", haggling up to {haggle:g}%" if haggle else "")
+    )
+    for column in ("Ask", "Offer", "P/L ask", "P/L hagg"):
+        table.add_column(column, justify="right", no_wrap=True)
+    table.add_column("Ext", no_wrap=True)
+    table.add_column("Listing", overflow="ellipsis")
+    for f in sorted(viable or found, key=lambda x: -x["at_best"])[:20]:
+        style = "green" if f["at_best"] > 0 else "red"
+        table.add_row(
+            f"{f['ask']:,.0f}",
+            f"{f['offer']:,.0f}",
+            f"[{'green' if f['at_ask'] > 0 else 'red'}]{f['at_ask']:+,.0f}[/]",
+            f"[{style}]{f['at_best']:+,.0f}[/]",
+            "P2" if f["pencil"] == "Pencil 2" else ("p?" if f["pencil"] else ""),
+            f["title"][:26],
+        )
+    rich.print(table)
+
+    if viable:
+        rich.print(
+            f"\n[green]{len(viable)} of {len(found)} can profit[/green] — but only if you get"
+            f" the full {haggle:g}% off. At the asking price"
+            f" {sum(1 for f in found if f['at_ask'] > 0)} of {len(found)} profit."
+        )
+        for f in sorted(viable, key=lambda x: -x["at_best"])[:5]:
+            rich.print(f"  [dim]{f['url']}[/dim]")
+    else:
+        short = min(f["ask"] - f["resale"] / factor for f in found)
+        rich.print(
+            f"\n[red]None of {len(found)} listings can profit[/red] even haggling {haggle:g}%."
+            f" The cheapest is [bold]{short:,.0f}[/bold] above what you could pay."
+        )
+    if any(f["pencil"] == "pencil?" for f in found):
+        rich.print("[yellow]pencil?[/yellow] = a pencil is mentioned but the generation is not"
+                   " stated; a 1st gen is worth less than the figure you gave.")
 
 
 @app.command()

@@ -378,6 +378,10 @@ class FacebookMarketplace(Marketplace):
                 )
             doze(login_wait_time, keyboard_monitor=self.keyboard_monitor)
 
+        # persist cookies now that any CAPTCHA or 2FA challenge has been cleared,
+        # so the next run starts already signed in
+        self.save_session()
+
     def search(
         self: "FacebookMarketplace", item_config: FacebookItemConfig
     ) -> Generator[Listing, None, None]:

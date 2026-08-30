@@ -236,3 +236,29 @@ def test_model_is_reclassified_when_a_description_arrives(db: Path) -> None:
     listing.description = "iPad Air 5ta generacion chip M1"
     price_history.update_details(listing, db_path=db)
     assert price_history.stats(by_model=True, db_path=db)[0].model == "iPad Air 5 (M1)"
+
+
+def test_latest_only_returns_one_row_per_listing(db: Path) -> None:
+    import time as _time
+
+    price_history.record([make_listing("1", "$400.000", "iPad Air 5 M1")], "i", "q", db_path=db)
+    _time.sleep(1.01)  # observed_at has second resolution
+    price_history.record([make_listing("1", "$350.000", "iPad Air 5 M1")], "i", "q", db_path=db)
+    assert len(price_history.observations(db_path=db)) == 2
+    latest = price_history.observations(latest_only=True, db_path=db)
+    assert len(latest) == 1
+    assert latest[0]["price"] == 350000.0  # the price you would actually pay
+
+
+def test_observations_filter_by_model(db: Path) -> None:
+    price_history.record(
+        [
+            make_listing("1", "$400.000", "iPad Air 5ta generación"),
+            make_listing("2", "$180.000", "iPad Air 4ta generación"),
+        ],
+        "i",
+        "q",
+        db_path=db,
+    )
+    rows = price_history.observations(model="iPad Air 5 (M1)", db_path=db)
+    assert [r["price"] for r in rows] == [400000.0]

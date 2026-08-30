@@ -387,12 +387,14 @@ def observations(
     days: int | None = None,
     limit: int = 200,
     include_unmatched: bool = False,
+    model: str | None = None,
+    latest_only: bool = False,
     db_path: Path | None = None,
 ) -> List[sqlite3.Row]:
     query = (
         "SELECT o.observed_at, o.item_name, o.search_phrase, o.title, o.price_raw,"
         " o.price, o.currency, o.location, o.matched, l.post_url, l.description,"
-        " l.seller, l.condition"
+        " l.seller, l.condition, l.model"
         " FROM observation o LEFT JOIN listing l"
         " ON l.marketplace = o.marketplace AND l.listing_id = o.listing_id WHERE 1=1"
     )
@@ -402,9 +404,18 @@ def observations(
     if item_name:
         query += " AND o.item_name = ?"
         params.append(item_name)
+    if model:
+        query += " AND l.model = ?"
+        params.append(model)
     if days:
         query += " AND o.observed_at >= ?"
         params.append((datetime.now() - timedelta(days=days)).isoformat(timespec="seconds"))
+    if latest_only:
+        # one row per listing: its most recent price, which is what you would pay
+        query += (
+            " AND o.observed_at = (SELECT MAX(o2.observed_at) FROM observation o2"
+            " WHERE o2.listing_id = o.listing_id AND o2.marketplace = o.marketplace)"
+        )
     query += " ORDER BY o.observed_at DESC, o.price IS NULL, o.price LIMIT ?"
     params.append(limit)
     with _connect(db_path) as conn, closing(conn.execute(query, params)) as cur:
