@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
+from .classify import UNKNOWN, classify, is_product
 from .utils import amm_home
 
 DB_PATH = amm_home / "price_history.db"
@@ -36,6 +37,8 @@ CREATE TABLE IF NOT EXISTS listing (
     listing_id  TEXT NOT NULL,
     post_url    TEXT NOT NULL,
     title       TEXT NOT NULL,
+    -- which product the listing is actually selling; see classify.py
+    model       TEXT,
     description TEXT,
     seller      TEXT,
     condition   TEXT,
@@ -113,9 +116,22 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "matched" not in existing:
         conn.execute("ALTER TABLE observation ADD COLUMN matched INTEGER NOT NULL DEFAULT 1")
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(listing)")}
-    for column in ("description", "seller", "condition"):
+    for column in ("model", "description", "seller", "condition"):
         if column not in existing:
             conn.execute(f"ALTER TABLE listing ADD COLUMN {column} TEXT")
+    # Classify anything not yet classified, so history collected before the
+    # column existed is not silently excluded from every model-aware query.
+    rows = conn.execute(
+        "SELECT marketplace, listing_id, title, description FROM listing WHERE model IS NULL"
+    ).fetchall()
+    if rows:
+        conn.executemany(
+            "UPDATE listing SET model = ? WHERE marketplace = ? AND listing_id = ?",
+            [
+                (classify(r["title"], r["description"]), r["marketplace"], r["listing_id"])
+                for r in rows
+            ],
+        )
 
 
 def update_details(
@@ -137,12 +153,16 @@ def update_details(
         conn.execute(
             "UPDATE listing SET description = COALESCE(NULLIF(?, ''), description),"
             " seller = COALESCE(NULLIF(?, ''), seller),"
-            " condition = COALESCE(NULLIF(?, ''), condition)"
+            " condition = COALESCE(NULLIF(?, ''), condition),"
+            " model = ?"
             " WHERE marketplace = ? AND listing_id = ?",
             (
                 getattr(listing, "description", "") or "",
                 getattr(listing, "seller", "") or "",
                 getattr(listing, "condition", "") or "",
+                classify(
+                    getattr(listing, "title", ""), getattr(listing, "description", "")
+                ),
                 marketplace,
                 listing_id,
             ),
@@ -224,14 +244,15 @@ def record(
             )
             inserted += cur.rowcount
             conn.execute(
-                "INSERT INTO listing (marketplace, listing_id, post_url, title,"
-                " first_seen, last_seen) VALUES (?,?,?,?,?,?)"
+                "INSERT INTO listing (marketplace, listing_id, post_url, title, model,"
+                " first_seen, last_seen) VALUES (?,?,?,?,?,?,?)"
                 " ON CONFLICT (marketplace, listing_id) DO UPDATE SET last_seen=excluded.last_seen",
                 (
                     marketplace,
                     listing_id,
                     getattr(listing, "post_url", ""),
                     getattr(listing, "title", ""),
+                    classify(getattr(listing, "title", "")),
                     stamp,
                     stamp,
                 ),
@@ -242,6 +263,7 @@ def record(
 @dataclass
 class Stats:
     item_name: str
+    model: str | None
     currency: str | None
     n_observations: int
     n_listings: int
@@ -268,35 +290,55 @@ def stats(
     item_name: str | None = None,
     days: int | None = None,
     include_unmatched: bool = False,
+    model: str | None = None,
+    by_model: bool = False,
+    products_only: bool = True,
     db_path: Path | None = None,
 ) -> List[Stats]:
-    """Summarize prices per item (and per currency, so locales do not mix)."""
+    """Summarize prices per item, currency and -- optionally -- product model.
+
+    A search for one model returns many others, so a single average over an item
+    mixes products that are not comparable. `by_model` splits them; `model`
+    restricts to one. `products_only` drops accessories, parts and unclassified
+    listings, which would otherwise drag the average down.
+    """
     query = (
-        "SELECT item_name, currency, listing_id, price, observed_at FROM observation"
-        " WHERE price IS NOT NULL"
+        "SELECT o.item_name, o.currency, o.listing_id, o.price, o.observed_at,"
+        " l.model FROM observation o LEFT JOIN listing l"
+        " ON l.marketplace = o.marketplace AND l.listing_id = o.listing_id"
+        " WHERE o.price IS NOT NULL"
     )
     params: List[object] = []
     if not include_unmatched:
-        query += " AND matched = 1"
+        query += " AND o.matched = 1"
     if item_name:
-        query += " AND item_name = ?"
+        query += " AND o.item_name = ?"
         params.append(item_name)
+    if model:
+        query += " AND l.model = ?"
+        params.append(model)
     if days:
-        query += " AND observed_at >= ?"
+        query += " AND o.observed_at >= ?"
         params.append((datetime.now() - timedelta(days=days)).isoformat(timespec="seconds"))
 
-    grouped: Dict[Tuple[str, str | None], List[sqlite3.Row]] = {}
+    grouped: Dict[Tuple[str, str | None, str | None], List[sqlite3.Row]] = {}
     with _connect(db_path) as conn, closing(conn.execute(query, params)) as cur:
         for row in cur:
-            grouped.setdefault((row["item_name"], row["currency"]), []).append(row)
+            if products_only and not is_product(row["model"] or UNKNOWN):
+                continue
+            key = (row["item_name"], row["currency"], row["model"] if by_model else None)
+            grouped.setdefault(key, []).append(row)
 
     results = []
-    for (name, currency), rows in sorted(grouped.items()):
+    for (name, currency, model_label), rows in sorted(
+        grouped.items(), key=lambda kv: (kv[0][0], kv[0][1] or "", kv[0][2] or "")
+    ):
         prices = sorted(row["price"] for row in rows)
         times = [row["observed_at"] for row in rows]
         results.append(
             Stats(
                 item_name=name,
+                model=model_label,
                 currency=currency,
                 n_observations=len(prices),
                 n_listings=len({row["listing_id"] for row in rows}),

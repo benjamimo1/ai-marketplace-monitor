@@ -132,10 +132,15 @@ def test_unmatched_listings_are_stored_but_excluded_from_stats(db: Path) -> None
     # the truck is on record ...
     assert len(price_history.observations(include_unmatched=True, db_path=db)) == 2
     # ... but must not drag the average up
-    result = price_history.stats(db_path=db)[0]
+    result = price_history.stats(db_path=db, products_only=False)[0]
     assert result.n_observations == 1
     assert result.mean == 8000.0
-    assert price_history.stats(include_unmatched=True, db_path=db)[0].n_observations == 2
+    assert (
+        price_history.stats(include_unmatched=True, products_only=False, db_path=db)[
+            0
+        ].n_observations
+        == 2
+    )
 
 
 def test_a_broken_filter_never_discards_a_listing(db: Path) -> None:
@@ -165,7 +170,7 @@ def test_migration_adds_matched_column_to_an_existing_database(db: Path) -> None
     conn.close()
 
     # opening it through the module migrates it, and pre-existing rows count as matched
-    assert price_history.stats(db_path=db)[0].n_observations == 1
+    assert price_history.stats(db_path=db, products_only=False)[0].n_observations == 1
 
 
 def test_update_details_backfills_description(db: Path) -> None:
@@ -200,3 +205,34 @@ def test_update_details_on_unknown_listing_is_harmless(db: Path) -> None:
     listing.description = "orphan"
     price_history.update_details(listing, db_path=db)  # must not raise
     assert price_history.observations(db_path=db) == []
+
+
+def test_stats_split_by_model(db: Path) -> None:
+    price_history.record(
+        [
+            make_listing("1", "$400.000", "iPad Air 5ta generación"),
+            make_listing("2", "$440.000", "iPad Air 5 M1 256GB"),
+            make_listing("3", "$180.000", "iPad Air 4ta generación"),
+            make_listing("4", "$10.000", "Lápiz iPad"),
+        ],
+        "ipad",
+        "ipad air 5",
+        db_path=db,
+    )
+    by_model = {row.model: row for row in price_history.stats(by_model=True, db_path=db)}
+    # the accessory is excluded, and the two generations do not pool
+    assert set(by_model) == {"iPad Air 5 (M1)", "iPad Air 4"}
+    assert by_model["iPad Air 5 (M1)"].mean == 420000.0
+    assert by_model["iPad Air 4"].mean == 180000.0
+    # and a single model can be requested directly
+    assert price_history.stats(model="iPad Air 4", db_path=db)[0].n_listings == 1
+
+
+def test_model_is_reclassified_when_a_description_arrives(db: Path) -> None:
+    listing = make_listing("1", "$400.000", "iPad Air")
+    price_history.record([listing], "ipad", "ipad air 5", db_path=db)
+    assert price_history.stats(by_model=True, db_path=db) == []  # unknown, so excluded
+
+    listing.description = "iPad Air 5ta generacion chip M1"
+    price_history.update_details(listing, db_path=db)
+    assert price_history.stats(by_model=True, db_path=db)[0].model == "iPad Air 5 (M1)"

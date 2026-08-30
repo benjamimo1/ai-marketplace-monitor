@@ -36,21 +36,44 @@ def _money(value: float, currency: Optional[str]) -> str:
 def summary(
     item: ItemOption = None,
     days: DaysOption = None,
+    by_model: Annotated[
+        bool, typer.Option("--by-model/--pooled", help="Split the average per product model.")
+    ] = True,
+    model: Annotated[
+        Optional[str], typer.Option("--model", "-m", help="Restrict to one model label.")
+    ] = None,
+    products_only: Annotated[
+        bool,
+        typer.Option(
+            "--products-only/--everything",
+            help="Drop accessories, for-parts units and unclassified listings.",
+        ),
+    ] = True,
     unmatched: AllOption = False,
     full: Annotated[
         bool, typer.Option("--full", help="Also show quartiles and the observation count.")
     ] = False,
 ) -> None:
     """Average, median and spread of prices per item."""
-    rows = price_history.stats(item_name=item, days=days, include_unmatched=unmatched)
+    rows = price_history.stats(
+        item_name=item,
+        days=days,
+        include_unmatched=unmatched,
+        model=model,
+        by_model=by_model,
+        products_only=products_only,
+    )
     if not rows:
         rich.print("[yellow]No price observations recorded yet.[/yellow]")
         raise typer.Exit(1)
 
-    table = Table(title=f"Price history{f' (last {days} days)' if days else ''}")
+    currency = rows[0].currency or ""
+    title = f"{rows[0].item_name} price history{f' (last {days} days)' if days else ''}"
+    table = Table(title=f"{title} — {currency}" if currency else title)
     # the numeric columns must never be truncated, so keep the default view narrow
     # enough for an 80-column terminal and hide the quartiles behind --full
-    table.add_column("Item", justify="left", overflow="ellipsis", min_width=10)
+    table.add_column("Model" if by_model else "Item", justify="left",
+                     overflow="ellipsis", min_width=10)
     columns = ["Listings", "Mean", "Median", "Min", "Max"]
     if full:
         columns = ["Listings", "Obs", "Mean", "Median", "P25", "P75", "Min", "Max"]
@@ -58,10 +81,8 @@ def summary(
         table.add_column(column, justify="right", no_wrap=True)
 
     for row in rows:
-        values = [
-            f"{row.item_name}{f' [{row.currency}]' if row.currency else ''}",
-            str(row.n_listings),
-        ]
+        label = row.model or row.item_name
+        values = [label, str(row.n_listings)]
         if full:
             values.append(str(row.n_observations))
         values += [_money(row.mean, row.currency), _money(row.median, row.currency)]
