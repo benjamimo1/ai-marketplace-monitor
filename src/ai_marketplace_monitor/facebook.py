@@ -538,6 +538,13 @@ class FacebookMarketplace(Marketplace):
                         item_name=item_config.name,
                         search_phrase=search_phrase,
                         city=cname or city,
+                        # Facebook pads thin result sets with loosely related
+                        # items, so flag which listings actually match the item
+                        # before they are averaged. Descriptions are not
+                        # available yet, so this filters on title and location.
+                        matched=lambda listing: self.check_listing(
+                            listing, item_config, description_available=False
+                        ),
                     )
                     if self.logger:
                         self.logger.debug(

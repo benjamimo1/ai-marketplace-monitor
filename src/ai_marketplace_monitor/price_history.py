@@ -20,7 +20,7 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from .utils import amm_home
 
@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS observation (
     currency      TEXT,
     price_raw     TEXT,
     location      TEXT,
+    -- 1 when the listing passed the item's own title/location filters. Facebook
+    -- pads thin result sets with loosely related items, so averaging over
+    -- everything the page returned would fold in unrelated products.
+    matched       INTEGER NOT NULL DEFAULT 1,
     observed_at   TEXT NOT NULL,
     observed_date TEXT NOT NULL
 );
@@ -96,6 +100,25 @@ def parse_price(raw: str) -> Tuple[Optional[float], Optional[str]]:
         return None, None
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a database was first created."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(observation)")}
+    if "matched" not in existing:
+        conn.execute("ALTER TABLE observation ADD COLUMN matched INTEGER NOT NULL DEFAULT 1")
+
+
+def _is_matched(predicate: Optional[Callable[[object], bool]], listing: object) -> int:
+    """Never let a broken filter lose data: on error the listing still counts."""
+    if predicate is None:
+        return 1
+    try:
+        return 1 if predicate(listing) else 0
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        return 1
+
+
 @contextmanager
 def _connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     path = db_path or DB_PATH
@@ -104,6 +127,7 @@ def _connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_SCHEMA)
+        _migrate(conn)
         yield conn
         conn.commit()
     finally:
@@ -116,9 +140,15 @@ def record(
     search_phrase: str,
     city: str | None = None,
     marketplace: str = "facebook",
+    matched: Optional[Callable[[object], bool]] = None,
     db_path: Path | None = None,
 ) -> int:
-    """Record one observation per listing. Returns the number of new rows."""
+    """Record one observation per listing. Returns the number of new rows.
+
+    `matched` decides whether a listing counts towards the item's statistics.
+    Everything is stored either way, so a filter that turns out to be too strict
+    can be reviewed later with `aimm-prices list --all`.
+    """
     if not listings:
         return 0
     now = datetime.now()
@@ -133,7 +163,7 @@ def record(
             cur = conn.execute(
                 "INSERT OR IGNORE INTO observation (marketplace, listing_id, item_name,"
                 " search_phrase, city, title, price, currency, price_raw, location,"
-                " observed_at, observed_date) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                " matched, observed_at, observed_date) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     marketplace,
                     listing_id,
@@ -145,6 +175,7 @@ def record(
                     currency,
                     getattr(listing, "price", ""),
                     getattr(listing, "location", ""),
+                    _is_matched(matched, listing),
                     stamp,
                     day,
                 ),
@@ -194,6 +225,7 @@ def _percentile(values: List[float], fraction: float) -> float:
 def stats(
     item_name: str | None = None,
     days: int | None = None,
+    include_unmatched: bool = False,
     db_path: Path | None = None,
 ) -> List[Stats]:
     """Summarize prices per item (and per currency, so locales do not mix)."""
@@ -202,6 +234,8 @@ def stats(
         " WHERE price IS NOT NULL"
     )
     params: List[object] = []
+    if not include_unmatched:
+        query += " AND matched = 1"
     if item_name:
         query += " AND item_name = ?"
         params.append(item_name)
@@ -240,6 +274,7 @@ def stats(
 def daily_series(
     item_name: str | None = None,
     days: int | None = None,
+    include_unmatched: bool = False,
     db_path: Path | None = None,
 ) -> List[sqlite3.Row]:
     """Per-day count / mean / median / min / max, for plotting a trend."""
@@ -250,6 +285,8 @@ def daily_series(
         " FROM observation WHERE price IS NOT NULL"
     )
     params: List[object] = []
+    if not include_unmatched:
+        query += " AND matched = 1"
     if item_name:
         query += " AND item_name = ?"
         params.append(item_name)
@@ -265,15 +302,18 @@ def observations(
     item_name: str | None = None,
     days: int | None = None,
     limit: int = 200,
+    include_unmatched: bool = False,
     db_path: Path | None = None,
 ) -> List[sqlite3.Row]:
     query = (
         "SELECT o.observed_at, o.item_name, o.search_phrase, o.title, o.price_raw,"
-        " o.price, o.currency, o.location, l.post_url"
+        " o.price, o.currency, o.location, o.matched, l.post_url"
         " FROM observation o LEFT JOIN listing l"
         " ON l.marketplace = o.marketplace AND l.listing_id = o.listing_id WHERE 1=1"
     )
     params: List[object] = []
+    if not include_unmatched:
+        query += " AND o.matched = 1"
     if item_name:
         query += " AND o.item_name = ?"
         params.append(item_name)

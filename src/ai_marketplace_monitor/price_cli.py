@@ -18,6 +18,14 @@ ItemOption = Annotated[
 DaysOption = Annotated[
     Optional[int], typer.Option("--days", "-d", help="Only consider the last N days.")
 ]
+AllOption = Annotated[
+    bool,
+    typer.Option(
+        "--all",
+        help="Include listings that did not match the item's filters, such as the"
+        " loosely related results Facebook pads thin searches with.",
+    ),
+]
 
 
 def _money(value: float, currency: Optional[str]) -> str:
@@ -28,12 +36,13 @@ def _money(value: float, currency: Optional[str]) -> str:
 def summary(
     item: ItemOption = None,
     days: DaysOption = None,
+    unmatched: AllOption = False,
     full: Annotated[
         bool, typer.Option("--full", help="Also show quartiles and the observation count.")
     ] = False,
 ) -> None:
     """Average, median and spread of prices per item."""
-    rows = price_history.stats(item_name=item, days=days)
+    rows = price_history.stats(item_name=item, days=days, include_unmatched=unmatched)
     if not rows:
         rich.print("[yellow]No price observations recorded yet.[/yellow]")
         raise typer.Exit(1)
@@ -64,9 +73,9 @@ def summary(
 
 
 @app.command()
-def trend(item: ItemOption = None, days: DaysOption = 30) -> None:
+def trend(item: ItemOption = None, days: DaysOption = 30, unmatched: AllOption = False) -> None:
     """Per-day mean price, to see whether an item is getting cheaper."""
-    rows = price_history.daily_series(item_name=item, days=days)
+    rows = price_history.daily_series(item_name=item, days=days, include_unmatched=unmatched)
     if not rows:
         rich.print("[yellow]No price observations recorded yet.[/yellow]")
         raise typer.Exit(1)
@@ -100,9 +109,12 @@ def list_observations(
     item: ItemOption = None,
     days: DaysOption = None,
     limit: Annotated[int, typer.Option("--limit", "-n", help="Maximum rows.")] = 40,
+    unmatched: AllOption = False,
 ) -> None:
     """The most recent individual listings, cheapest first within a run."""
-    rows = price_history.observations(item_name=item, days=days, limit=limit)
+    rows = price_history.observations(
+        item_name=item, days=days, limit=limit, include_unmatched=unmatched
+    )
     if not rows:
         rich.print("[yellow]No price observations recorded yet.[/yellow]")
         raise typer.Exit(1)
@@ -112,6 +124,8 @@ def list_observations(
         table.add_column(column, no_wrap=True)
     for column in ("Item", "Phrase", "Title", "Location"):
         table.add_column(column, overflow="ellipsis")
+    if unmatched:
+        table.add_column("Match", no_wrap=True)
     for row in rows:
         table.add_row(
             row["observed_at"].replace("T", " ")[5:16],
@@ -120,6 +134,7 @@ def list_observations(
             row["search_phrase"],
             (row["title"] or "")[:50],
             (row["location"] or "")[:20],
+            *(["yes" if row["matched"] else "[red]no[/red]"] if unmatched else []),
         )
     rich.print(table)
 
@@ -129,9 +144,12 @@ def export(
     item: ItemOption = None,
     days: DaysOption = None,
     limit: Annotated[int, typer.Option("--limit", "-n")] = 100000,
+    unmatched: AllOption = True,
 ) -> None:
     """Write every observation to stdout as CSV."""
-    rows = price_history.observations(item_name=item, days=days, limit=limit)
+    rows = price_history.observations(
+        item_name=item, days=days, limit=limit, include_unmatched=unmatched
+    )
     if not rows:
         raise typer.Exit(1)
     writer = csv.writer(sys.stdout)

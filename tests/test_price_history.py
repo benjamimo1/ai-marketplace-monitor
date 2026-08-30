@@ -122,3 +122,47 @@ def test_daily_series_and_observations(db: Path) -> None:
     assert len(rows) == 2
     assert rows[0]["post_url"].startswith("https://www.facebook.com/marketplace/item/")
     assert price_history.item_names(db_path=db) == ["ipad"]
+
+
+def test_unmatched_listings_are_stored_but_excluded_from_stats(db: Path) -> None:
+    batch = [make_listing("1", "MX$8,000", "iPad Air 5"), make_listing("2", "MX$355,000", "Ford f550")]
+    price_history.record(
+        batch, "ipad", "ipad air 5", matched=lambda x: "iPad" in x.title, db_path=db
+    )
+    # the truck is on record ...
+    assert len(price_history.observations(include_unmatched=True, db_path=db)) == 2
+    # ... but must not drag the average up
+    result = price_history.stats(db_path=db)[0]
+    assert result.n_observations == 1
+    assert result.mean == 8000.0
+    assert price_history.stats(include_unmatched=True, db_path=db)[0].n_observations == 2
+
+
+def test_a_broken_filter_never_discards_a_listing(db: Path) -> None:
+    def explode(listing: object) -> bool:
+        raise RuntimeError("filter is broken")
+
+    price_history.record([make_listing("1", "MX$8,000")], "ipad", "q", matched=explode, db_path=db)
+    assert price_history.stats(db_path=db)[0].n_observations == 1
+
+
+def test_migration_adds_matched_column_to_an_existing_database(db: Path) -> None:
+    import sqlite3
+
+    # a database created before the column existed
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        price_history._SCHEMA.replace(
+            "matched       INTEGER NOT NULL DEFAULT 1,", ""
+        ).replace(", COALESCE(price, -1)", ", price")
+    )
+    conn.execute(
+        "INSERT INTO observation (marketplace, listing_id, item_name, search_phrase,"
+        " price, currency, observed_at, observed_date)"
+        " VALUES ('facebook','1','ipad','q',8000.0,'MX$','2026-01-01T00:00:00','2026-01-01')"
+    )
+    conn.commit()
+    conn.close()
+
+    # opening it through the module migrates it, and pre-existing rows count as matched
+    assert price_history.stats(db_path=db)[0].n_observations == 1
