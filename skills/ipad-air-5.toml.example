@@ -1,0 +1,60 @@
+# Price-tracking config: no AI backend, no notification channel.
+# Every search records to ~/.ai-marketplace-monitor/price_history.db.
+
+[marketplace.facebook]
+# Credentials are read from the environment so that no secret is ever written
+# to this file. Populate them from the macOS Keychain -- see the run command.
+username = "${FACEBOOK_USERNAME}"
+password = "${FACEBOOK_PASSWORD}"
+# "santiagocl", not "santiago". Facebook does not recognise the latter and
+# silently falls back to the account's own location, which returned US results.
+# The slug is the segment after /marketplace/ in a Marketplace search URL.
+search_city = "santiagocl"
+city_name = "Santiago de Chile"
+# Kilometres here, since Chile is metric; the upstream default of 500 is miles.
+radius = 50
+search_interval = "2h"
+# Listing pages render in Spanish, and the parser locates fields by their
+# labels: without this every layout rejects the page (it looks for "Condition",
+# the page says "Estado") and no description, seller or condition is extracted.
+language = "es"
+
+# All three phrases describe the same device, so they live under one item.
+# Price history keys on the item name, which means the three phrases pool
+# into a single average while each observation still records the phrase
+# that surfaced it.
+[item.ipad_air_5]
+search_phrases = [
+    "ipad air quinta generacion",
+    "iPad air m1",
+    "ipad air 5",
+    # sellers abbreviate the generation without the word "generacion"; this
+    # phrase alone surfaced listings the other three never returned.
+    "ipad air 5ta gen",
+]
+# No min_price/max_price on purpose. They are sent to Facebook in the search URL
+# and interpreted in the *marketplace's* currency, not CLP -- a 100000-900000
+# band against a US-located marketplace returns pickup trucks. Noise is handled
+# by the keyword filters below instead, which run locally.
+#
+# No antikeywords either. They match on the whole title, so "iPad Air 5 M1 +
+# funda" was dropped as if it were a case -- a real listing of exactly the
+# wanted model, lost to a word about a bundled extra. Accessories, for-parts
+# units and other models are now separated by classify.py after the fact, which
+# can tell "a case" from "a tablet sold with a case".
+keywords = ["ipad"]
+
+[user.me]
+# No notification channel: this run is for price data only.
+
+# A separate item, not more phrases on ipad_air_5: price history keys on the
+# item name, so sharing one item would pool two different products into one
+# average. The model classifier separates them in the statistics either way,
+# but keeping the items apart also keeps the searches honest.
+[item.ipad_air_m2]
+search_phrases = [
+    "ipad air m2",
+    "ipad air sexta generacion",
+    "ipad air 11 m2",
+]
+keywords = ["ipad"]
