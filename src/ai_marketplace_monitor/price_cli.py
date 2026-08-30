@@ -140,6 +140,34 @@ def list_observations(
 
 
 @app.command()
+def show(
+    item: ItemOption = None,
+    days: DaysOption = None,
+    limit: Annotated[int, typer.Option("--limit", "-n")] = 10,
+    unmatched: AllOption = False,
+) -> None:
+    """Full title and description per listing, to identify the actual model."""
+    rows = price_history.observations(
+        item_name=item, days=days, limit=limit, include_unmatched=unmatched
+    )
+    if not rows:
+        rich.print("[yellow]No price observations recorded yet.[/yellow]")
+        raise typer.Exit(1)
+
+    for row in rows:
+        flag = "" if row["matched"] else " [red](unmatched)[/red]"
+        rich.print(f"\n[bold]{row['price_raw'] or '-'}[/bold]  {row['title']}{flag}")
+        rich.print(f"  [dim]{row['location'] or '?'} · {row['observed_at'].replace('T', ' ')}"
+                   f" · via \"{row['search_phrase']}\"[/dim]")
+        description = (row["description"] or "").strip()
+        if description:
+            rich.print(f"  {description[:400]}")
+        else:
+            rich.print("  [dim]no description recorded (details were never fetched)[/dim]")
+        rich.print(f"  [dim]{row['post_url']}[/dim]")
+
+
+@app.command()
 def export(
     item: ItemOption = None,
     days: DaysOption = None,

@@ -27,11 +27,18 @@ from .utils import amm_home
 DB_PATH = amm_home / "price_history.db"
 
 _SCHEMA = """
+-- Per-listing facts that do not change between observations. Description,
+-- seller and condition only become available once the listing's own page has
+-- been opened, so they are backfilled by update_details() and stay NULL for
+-- listings whose details were never fetched.
 CREATE TABLE IF NOT EXISTS listing (
     marketplace TEXT NOT NULL,
     listing_id  TEXT NOT NULL,
     post_url    TEXT NOT NULL,
     title       TEXT NOT NULL,
+    description TEXT,
+    seller      TEXT,
+    condition   TEXT,
     first_seen  TEXT NOT NULL,
     last_seen   TEXT NOT NULL,
     PRIMARY KEY (marketplace, listing_id)
@@ -105,6 +112,41 @@ def _migrate(conn: sqlite3.Connection) -> None:
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(observation)")}
     if "matched" not in existing:
         conn.execute("ALTER TABLE observation ADD COLUMN matched INTEGER NOT NULL DEFAULT 1")
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(listing)")}
+    for column in ("description", "seller", "condition"):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE listing ADD COLUMN {column} TEXT")
+
+
+def update_details(
+    listing: object,
+    marketplace: str = "facebook",
+    db_path: Path | None = None,
+) -> None:
+    """Backfill the facts that only appear on a listing's own page.
+
+    Titles alone are often ambiguous -- "iPad Air" spans several generations at
+    very different prices -- so the description is kept to identify what was
+    actually being sold. Existing values are only overwritten by non-empty ones,
+    since a later scrape may fail to extract a description it got before.
+    """
+    listing_id = getattr(listing, "id", "") or ""
+    if not listing_id:
+        return
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE listing SET description = COALESCE(NULLIF(?, ''), description),"
+            " seller = COALESCE(NULLIF(?, ''), seller),"
+            " condition = COALESCE(NULLIF(?, ''), condition)"
+            " WHERE marketplace = ? AND listing_id = ?",
+            (
+                getattr(listing, "description", "") or "",
+                getattr(listing, "seller", "") or "",
+                getattr(listing, "condition", "") or "",
+                marketplace,
+                listing_id,
+            ),
+        )
 
 
 def _is_matched(predicate: Optional[Callable[[object], bool]], listing: object) -> int:
@@ -307,7 +349,8 @@ def observations(
 ) -> List[sqlite3.Row]:
     query = (
         "SELECT o.observed_at, o.item_name, o.search_phrase, o.title, o.price_raw,"
-        " o.price, o.currency, o.location, o.matched, l.post_url"
+        " o.price, o.currency, o.location, o.matched, l.post_url, l.description,"
+        " l.seller, l.condition"
         " FROM observation o LEFT JOIN listing l"
         " ON l.marketplace = o.marketplace AND l.listing_id = o.listing_id WHERE 1=1"
     )

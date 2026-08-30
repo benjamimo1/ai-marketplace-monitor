@@ -597,6 +597,18 @@ class FacebookMarketplace(Marketplace):
                         # other attributes should be consistent
                         setattr(listing, attr, getattr(details, attr))
                     listing.name = item_config.name
+
+                    # the description is only available here, and a title alone
+                    # is often too ambiguous to tell which model was for sale
+                    try:
+                        price_history.update_details(listing)
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.warning(
+                                f"""{hilight("[History]", "fail")} Failed to record listing details: {e}"""
+                            )
                     if self.logger:
                         self.logger.debug(
                             f"""{hilight("[Retrieve]", "succ")} New item "{listing.title}" from {listing.post_url} is sold by "{listing.seller}" and with description "{listing.description[:100]}..." """

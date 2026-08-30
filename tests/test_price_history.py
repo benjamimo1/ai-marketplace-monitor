@@ -166,3 +166,37 @@ def test_migration_adds_matched_column_to_an_existing_database(db: Path) -> None
 
     # opening it through the module migrates it, and pre-existing rows count as matched
     assert price_history.stats(db_path=db)[0].n_observations == 1
+
+
+def test_update_details_backfills_description(db: Path) -> None:
+    listing = make_listing("1", "MX$8,000", "iPad Air")
+    price_history.record([listing], "ipad", "ipad air 5", db_path=db)
+    assert price_history.observations(db_path=db)[0]["description"] is None
+
+    listing.description = "iPad Air 5ta generacion, chip M1, 64GB, impecable"
+    listing.seller = "Juan P"
+    listing.condition = "Used - like new"
+    price_history.update_details(listing, db_path=db)
+
+    row = price_history.observations(db_path=db)[0]
+    assert "M1" in row["description"]
+    assert row["seller"] == "Juan P"
+    assert row["condition"] == "Used - like new"
+
+
+def test_update_details_never_overwrites_with_blanks(db: Path) -> None:
+    listing = make_listing("1", "MX$8,000")
+    price_history.record([listing], "ipad", "q", db_path=db)
+    listing.description = "chip M1, 256GB"
+    price_history.update_details(listing, db_path=db)
+    # a later scrape that failed to extract the description must not erase it
+    listing.description = ""
+    price_history.update_details(listing, db_path=db)
+    assert price_history.observations(db_path=db)[0]["description"] == "chip M1, 256GB"
+
+
+def test_update_details_on_unknown_listing_is_harmless(db: Path) -> None:
+    listing = make_listing("999", "MX$1,000")
+    listing.description = "orphan"
+    price_history.update_details(listing, db_path=db)  # must not raise
+    assert price_history.observations(db_path=db) == []
