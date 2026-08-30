@@ -89,6 +89,23 @@ CREATE TABLE IF NOT EXISTS contact (
     PRIMARY KEY (marketplace, listing_id)
 );
 
+-- What the user has ACTUALLY sold, and for how much. These are achieved
+-- prices, not asking prices, and are the only trustworthy basis for deciding
+-- what to pay: a market can ask far more than it gets.
+CREATE TABLE IF NOT EXISTS sale (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    marketplace TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    model       TEXT,
+    price       REAL NOT NULL,
+    currency    TEXT,
+    sold_on     TEXT,
+    buyer       TEXT,
+    note        TEXT,
+    recorded_at TEXT NOT NULL,
+    UNIQUE (marketplace, title, price)
+);
+
 CREATE INDEX IF NOT EXISTS observation_item_time
     ON observation (item_name, observed_at);
 """
@@ -434,6 +451,58 @@ def observations(
     params.append(limit)
     with _connect(db_path) as conn, closing(conn.execute(query, params)) as cur:
         return cur.fetchall()
+
+
+def record_sale(
+    title: str,
+    price: float,
+    model: str | None = None,
+    sold_on: str | None = None,
+    buyer: str | None = None,
+    note: str | None = None,
+    currency: str = "$",
+    marketplace: str = "facebook",
+    db_path: Path | None = None,
+) -> None:
+    """Record something the user actually sold, and for how much.
+
+    Classification is derived from the title when no model is given, so a sale
+    lines up with the listings of the same model automatically.
+    """
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO sale (marketplace, title, model, price, currency,"
+            " sold_on, buyer, note, recorded_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                marketplace,
+                title,
+                model or classify(title),
+                price,
+                currency,
+                sold_on,
+                buyer,
+                note,
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+
+
+def sales(model: str | None = None, db_path: Path | None = None) -> List[sqlite3.Row]:
+    """Achieved sale prices, most recent first."""
+    query = "SELECT * FROM sale"
+    params: List[object] = []
+    if model:
+        query += " WHERE model = ?"
+        params.append(model)
+    query += " ORDER BY COALESCE(sold_on, recorded_at) DESC"
+    with _connect(db_path) as conn, closing(conn.execute(query, params)) as cur:
+        return cur.fetchall()
+
+
+def achieved_price(model: str, db_path: Path | None = None) -> Optional[float]:
+    """What the user actually got for this model, if they have ever sold one."""
+    rows = sales(model=model, db_path=db_path)
+    return statistics.median([r["price"] for r in rows]) if rows else None
 
 
 def record_contact(

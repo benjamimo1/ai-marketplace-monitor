@@ -370,6 +370,39 @@ def mark_contacted(
     rich.print(f"[green]Recorded contact for {listing_id}.[/green]")
 
 
+@app.command("sold")
+def sold(
+    title: Annotated[Optional[str], typer.Option("--add", help="Title of an item you sold.")] = None,
+    price: Annotated[Optional[int], typer.Option("--price", help="What you actually got.")] = None,
+    on: Annotated[Optional[str], typer.Option("--on", help="Date sold, e.g. 2026-08-11.")] = None,
+    buyer: Annotated[Optional[str], typer.Option("--buyer")] = None,
+    note: Annotated[Optional[str], typer.Option("--note")] = None,
+) -> None:
+    """Your own achieved sale prices -- the only trustworthy resale figures."""
+    if title:
+        if price is None:
+            rich.print("[red]--price is required with --add.[/red]")
+            raise typer.Exit(1)
+        price_history.record_sale(title, price, sold_on=on, buyer=buyer, note=note)
+        rich.print(f"[green]Recorded:[/green] {title} at {_clp(price)}")
+        return
+
+    rows = price_history.sales()
+    if not rows:
+        rich.print("[yellow]No sales recorded yet.[/yellow]")
+        raise typer.Exit(1)
+    table = Table(title="What you have actually sold")
+    table.add_column("Sold", no_wrap=True)
+    table.add_column("Price", justify="right", no_wrap=True)
+    table.add_column("Model", overflow="ellipsis")
+    table.add_column("Item", overflow="ellipsis")
+    for row in rows:
+        table.add_row(row["sold_on"] or "-", _clp(row["price"]),
+                      row["model"] or "-", row["title"][:36])
+    rich.print(table)
+    rich.print("[dim]These are achieved prices. `deals --sell` should use them, not asking-price medians.[/dim]")
+
+
 @app.command("sent")
 def list_contacts() -> None:
     """Offers already sent."""
