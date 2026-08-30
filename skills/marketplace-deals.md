@@ -22,6 +22,13 @@ All commands run from the repo with `.venv/bin/`.
 | Can usually haggle | **up to 20%** off asking |
 | Market | Santiago, Chile (`santiagocl`), prices in CLP |
 
+**Standing rule:** an **iPad Air 5 (M1) bundled with an Apple Pencil, asking
+under $300.000**, is a good deal — buy at the asking price rather than
+negotiating. The pencil alone covers most of the gap to what the device resells
+for, and a bundle that cheap does not last the day. `deals` flags these as
+`BUY` and lists them above everything else; a stated 1st-generation pencil does
+not qualify. Surface these first and tell the user to move quickly.
+
 Their resale sits ~25% below the median *asking* price. That gap is the whole
 point: only a seller pricing well below the pack is worth approaching. Never
 compute a margin by comparing one asking price to another — it invents profit

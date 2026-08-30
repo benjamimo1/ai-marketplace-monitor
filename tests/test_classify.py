@@ -96,3 +96,29 @@ def test_pencil_generation_found_in_description() -> None:
     # the title says nothing; the description is where the value is
     assert pencil("iPad Air 5ta generación 64gb") is None
     assert pencil("iPad Air 5ta generación 64gb", "Incluye Apple Pencil 2ª generación") == 2
+
+
+def test_bundle_alert_rule() -> None:
+    """A device-plus-pencil bundle under the alert price is a straight buy.
+
+    Encodes the user's rule: an iPad Air 5 (M1) with an Apple Pencil asking
+    below 300.000 CLP is worth taking at the asking price. A stated 1st
+    generation pencil does not qualify -- it is not worth the same resale.
+    """
+    from ai_marketplace_monitor.classify import classify, pencil
+
+    def is_steal(title: str, ask: int, limit: int = 300000) -> bool:
+        generation = pencil(title)
+        return (
+            classify(title) == "iPad Air 5 (M1)"
+            and generation is not None
+            and generation != 1
+            and ask < limit
+        )
+
+    assert is_steal("iPad Air 5ta generacion M1 + Apple Pencil 2", 280000)
+    assert is_steal("iPad Air 5 M1 64GB con apple pencil", 295000)  # unstated still counts
+    assert not is_steal("iPad Air 5ta generacion 64gb", 290000)  # no pencil
+    assert not is_steal("iPad Air 5 M1 + Apple Pencil 1ra generacion", 280000)  # gen 1
+    assert not is_steal("iPad Air 5ta generacion M1 + Apple Pencil 2", 330000)  # over the limit
+    assert not is_steal("iPad Air 4ta generacion + Apple Pencil 2", 280000)  # wrong model

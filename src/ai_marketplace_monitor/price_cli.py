@@ -225,6 +225,14 @@ def deals(
     messages: Annotated[
         bool, typer.Option("--messages", help="Print ready-to-send offers instead of a table.")
     ] = False,
+    bundle_alert: Annotated[
+        int,
+        typer.Option(
+            "--bundle-alert",
+            help="Asking price below which a device-plus-pencil bundle is a"
+            " straight buy, no negotiation needed. 0 disables.",
+        ),
+    ] = 300000,
     item: ItemOption = None,
     days: DaysOption = None,
     limit: Annotated[int, typer.Option("--limit", "-n")] = 200,
@@ -258,8 +266,17 @@ def deals(
         if already and not include_contacted:
             skipped += 1
             continue
+        # A bundle asking under this is worth taking at the asking price: the
+        # pencil alone covers most of the gap to what the device resells for.
+        steal = bool(
+            bundle_alert
+            and generation is not None
+            and generation != 1
+            and row["price"] < bundle_alert
+        )
         found.append(
             {
+                "steal": steal,
                 "id": row["listing_id"],
                 "ask": row["price"],
                 "offer": offer,
@@ -273,7 +290,18 @@ def deals(
             }
         )
 
-    viable = sorted((f for f in found if f["profit"] > 0), key=lambda x: -x["profit"])
+    viable = sorted(
+        (f for f in found if f["profit"] > 0), key=lambda x: (not x["steal"], -x["profit"])
+    )
+    steals = [f for f in found if f["steal"]]
+    if steals:
+        rich.print(
+            f"[bold green]{len(steals)} bundle(s) asking under {_clp(bundle_alert)}"
+            f" — buy at the asking price, do not haggle:[/bold green]"
+        )
+        for f in steals:
+            rich.print(f"  [bold]{_clp(f['ask'])}[/bold]  {f['title'][:40]}  [dim]{f['url']}[/dim]")
+        rich.print()
 
     if messages:
         if not viable:
@@ -281,6 +309,10 @@ def deals(
             raise typer.Exit(1)
         for f in viable:
             note = {2: "Pencil 2", 0: "pencil, generation unstated", 1: "Pencil 1"}.get(f["gen"], "")
+            if f["steal"]:
+                note = f"BUY AT ASKING — bundle under {_clp(bundle_alert)}" + (
+                    f", {note}" if note else ""
+                )
             rich.print(
                 f"\n[bold]{f['seller']}[/bold] — ask {_clp(f['ask'])}, profit"
                 f" [green]{_clp(f['profit'])}[/green]{f' · {note}' if note else ''}"
@@ -310,7 +342,7 @@ def deals(
             f"[{'green' if f['at_ask'] > 0 else 'red'}]{f['at_ask']:+,.0f}[/]",
             f"[{style}]{f['profit']:+,.0f}[/]",
             {2: "P2", 1: "[red]P1[/red]", 0: "[yellow]p?[/yellow]"}.get(f["gen"], ""),
-            f["title"][:24],
+            ("[bold green]BUY [/bold green]" if f["steal"] else "") + f["title"][:20],
         )
     rich.print(table)
     if skipped:
