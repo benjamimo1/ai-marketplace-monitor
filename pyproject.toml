@@ -54,6 +54,7 @@ Documentation = "https://ai-marketplace-monitor.readthedocs.io"
 [project.scripts]
 ai-marketplace-monitor = "ai_marketplace_monitor.cli:app"
 aimm = "ai_marketplace_monitor.cli:app"
+aimm-prices = "ai_marketplace_monitor.price_cli:app"
 
 [project.optional-dependencies]
 pynput = ["pynput>=1.7.0"]

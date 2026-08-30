@@ -14,6 +14,7 @@ from currency_converter import CurrencyConverter  # type: ignore
 from playwright.sync_api import Browser, ElementHandle, Page  # type: ignore
 from rich.pretty import pretty_repr
 
+from . import price_history
 from .listing import Listing
 from .marketplace import ItemConfig, Marketplace, MarketplaceConfig, WebPage
 from .utils import (
@@ -526,6 +527,30 @@ class FacebookMarketplace(Marketplace):
                     )
 
                 counter.increment(CounterItem.SEARCH_PERFORMED, item_config.name)
+
+                # record every listing the search returned, before any price,
+                # keyword or AI filter, so price history samples the whole market
+                try:
+                    recorded = price_history.record(
+                        found_listings,
+                        item_name=item_config.name,
+                        search_phrase=search_phrase,
+                        city=cname or city,
+                    )
+                    if self.logger:
+                        self.logger.debug(
+                            f"""{hilight("[History]", "succ")} Recorded {recorded} new price """
+                            f"""{"observation" if recorded == 1 else "observations"} from """
+                            f"""{len(found_listings)} {hilight(search_phrase)} results."""
+                        )
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    # price history is auxiliary; never let it break a search
+                    if self.logger:
+                        self.logger.warning(
+                            f"""{hilight("[History]", "fail")} Failed to record price history: {e}"""
+                        )
 
                 # go to each item and get the description
                 # if we have not done that before
